@@ -49,15 +49,26 @@ def headers():
     return h
 
 
-def api_get(path, params=None):
+def api_get(path, params=None, timeout=200):
     try:
-        r = requests.get(f"{base_url}{path}", headers=headers(), params=params, timeout=200)
+        r = requests.get(f"{base_url}{path}", headers=headers(), params=params, timeout=timeout)
         if r.status_code >= 400:
             st.error(f"GET {path} failed ({r.status_code}): {r.text}")
             return None
         return r.json()
     except requests.exceptions.RequestException as e:
         st.error(f"Could not reach backend at {base_url}. Is the server running?\n\n{e}")
+        return None
+
+
+@st.cache_data(ttl=300)
+def get_developers_cached(base_url_value, api_key_value):
+    try:
+        r = requests.get(f"{base_url_value}/developers", headers={"Content-Type": "application/json", **({"x-api-key": api_key_value} if api_key_value else {})}, timeout=200)
+        if r.status_code >= 400:
+            return None
+        return r.json()
+    except requests.exceptions.RequestException:
         return None
 
 
@@ -131,13 +142,17 @@ if page == "Overview":
     st.title("Overview")
     st.caption("Quick health check across data sources, gaps, and alerts.")
 
+    if "overview_refresh_message" in st.session_state:
+        st.success(st.session_state["overview_refresh_message"])
+        del st.session_state["overview_refresh_message"] 
+
     gaps_data = api_get("/detected_gaps")
-    devs_data = api_get("/developers")
+    devs_data = get_developers_cached(base_url, api_key)
     alerts_data = api_get("/alerts/pending")
 
     gaps = gaps_data.get("detected_gaps", []) if gaps_data else []
     devs = devs_data.get("developers", []) if devs_data else []
-    alerts = alerts_data if isinstance(alerts_data, list) else (alerts_data.get("alerts", []) if alerts_data else [])
+    alerts = alerts_data if isinstance(alerts_data, list) else (alerts_data.get("pending_alerts", []) if alerts_data else [])
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Gaps", len(gaps))
@@ -154,14 +169,15 @@ if page == "Overview":
         if st.button("Refresh Gaps", use_container_width=True):
             result = api_post("/refresh_gaps")
             if result:
-                st.success(f"{result.get('new_total_gaps', '?')} total gaps, {result.get('new_gaps_saved', '?')} new.")
+                st.session_state["overview_refresh_message"] = f"{result.get('new_total_gaps', '?')} total gaps, {result.get('new_gaps_saved', '?')} new."
                 st.rerun()
 
     with col2:
         st.subheader("🤖 Summarize pending gaps")
         st.write("Runs Gemini over all pending gaps.")
         if st.button("Summarize Pending Gaps", use_container_width=True):
-            result = api_get("/summarize_gaps")
+            with st.spinner("Summarizing pending gaps — this can take a while..."):
+                result = api_get("/summarize_gaps", timeout=900)
             if result:
                 st.success(result.get("message", "Done."))
 
@@ -239,6 +255,9 @@ elif page == "Timesheets":
     add_tab, edit_tab, import_tab = st.tabs(["➕ Add / Update", "✏️ Edit or Delete One", "📁 Bulk Import CSV"])
 
     with add_tab:
+        if "ts_add_message" in st.session_state:
+            st.success(st.session_state["ts_add_message"])
+            del st.session_state["ts_add_message"]
         with st.form("add_ts"):
             f1, f2, f3, f4 = st.columns(4)
             dev_id = f1.text_input("Developer ID")
@@ -258,9 +277,15 @@ elif page == "Timesheets":
                     payload["notes"] = notes
                 result = api_post("/timesheets", json=payload)
                 if result:
-                    st.success(f"Inserted: {result.get('inserted')}, Updated: {result.get('updated')}")
-
+                    st.session_state["ts_add_message"] = f"Inserted: {result.get('inserted')}, Updated: {result.get('updated')}"
+                    st.rerun()
     with edit_tab:
+        if "ts_edit_message" in st.session_state:
+            st.success(st.session_state["ts_edit_message"])
+            if "ts_edit_result" in st.session_state:
+                st.json(st.session_state["ts_edit_result"])
+                del st.session_state["ts_edit_result"]
+            del st.session_state["ts_edit_message"]
         e1, e2 = st.columns(2)
         edit_dev = e1.text_input("Developer ID", key="edit_dev")
         edit_date = e2.text_input("Date (YYYY-MM-DD)", key="edit_date")
@@ -288,8 +313,9 @@ elif page == "Timesheets":
                 else:
                     result = api_put(f"/timesheets/{edit_dev}/{edit_date}", json=payload)
                     if result:
-                        st.success("Updated.")
-                        st.json(result)
+                        st.session_state["ts_edit_message"] = "Updated."
+                        st.session_state["ts_edit_result"] = result
+                        st.rerun()
 
         if b2.button("🗑️ Delete entry", type="secondary"):
             if not edit_dev or not edit_date:
@@ -297,16 +323,21 @@ elif page == "Timesheets":
             else:
                 result = api_delete(f"/timesheets/{edit_dev}/{edit_date}")
                 if result:
-                    st.success(result.get("message", "Deleted."))
+                    st.session_state["ts_edit_message"] = result.get("message", "Deleted.")
+                    st.rerun()
 
     with import_tab:
+        if "ts_import_message" in st.session_state:
+            st.success(st.session_state["ts_import_message"])
+            del st.session_state["ts_import_message"]
         st.write("Upload a CSV with columns like `developer_id, date, hours_logged, project, notes`.")
         uploaded = st.file_uploader("Choose CSV file", type="csv")
         if uploaded and st.button("Import CSV"):
             files = {"file": (uploaded.name, uploaded.getvalue(), "text/csv")}
             result = api_post("/import_timesheets", files=files)
             if result:
-                st.success(result)
+                st.session_state["ts_import_message"] = result
+                st.rerun()
 
 # ===========================================================================
 # GAPS
@@ -388,7 +419,7 @@ elif page == "Developers":
     st.title("Developers")
     st.caption("Activity footprint vs. logged timesheet, side by side.")
 
-    devs_data = api_get("/developers")
+    devs_data = get_developers_cached(base_url, api_key)
     devs = devs_data.get("developers", []) if devs_data else []
 
     if not devs:
@@ -432,7 +463,7 @@ elif page == "Alerts":
 
     with tab1:
         pending = api_get("/alerts/pending")
-        pending_list = pending if isinstance(pending, list) else (pending.get("alerts", []) if pending else [])
+        pending_list = pending if isinstance(pending, list) else (pending.get("pending_alerts", []) if pending else [])
         if not pending_list:
             st.info("No pending alerts.")
         else:

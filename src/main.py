@@ -607,7 +607,8 @@ async def summarize_gaps():
             **footprint,
         }
 
-        summary = generate_ai_summary(enriched_gap)
+        from starlette.concurrency import run_in_threadpool
+        summary = await run_in_threadpool(generate_ai_summary, enriched_gap)
 
         await db["detected_gaps"].update_one(
             {"_id": gap["_id"]},
@@ -623,6 +624,7 @@ async def summarize_gaps():
         )
 
         updated.append({"developer_id": developer_id, "date": date})
+        await asyncio.sleep(2.2)
 
     return {"message": f"Summarized {len(updated)} gaps.", "updated": updated}
 
@@ -630,7 +632,21 @@ async def summarize_gaps():
 @app.post("/classify_gap")
 async def classify_gap(payload: dict[str, Any] = Body(...)):
     try:
-        return {"classification": generate_gap_priority(payload)}
+        classification = generate_gap_priority(payload)
+
+        developer_id = normalize_developer_id(payload.get("developer_id", ""))
+        date = normalize_activity_date(payload.get("date", ""))
+
+        # Extract just the label (High/Medium/Low) to store as a clean, filterable field
+        priority_label = classification.split(" priority", 1)[0].strip().lower() if "priority" in classification.lower() else classification.lower()
+
+        if developer_id and date:
+            await db["detected_gaps"].update_one(
+                {"developer_id": developer_id, "date": date},
+                {"$set": {"priority": priority_label, "priority_explanation": classification}},
+            )
+
+        return {"classification": classification}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to classify gap: {exc}") from exc
 
@@ -646,7 +662,30 @@ async def suggest_timesheet(payload: dict[str, Any] = Body(...)):
 @app.post("/match_activity")
 async def match_activity(payload: dict[str, Any] = Body(...)):
     try:
-        return {"match": match_activity_to_project(payload)}
+        developer_id = normalize_developer_id(payload.get("developer_id", ""))
+        date = normalize_activity_date(payload.get("date", ""))
+
+        # Pull the real activity records for this developer/date so the AI
+        # has actual commit messages / project labels to reason about,
+        # instead of just counts.
+        records = await db["activity_logs"].find(
+            {"developer_id": developer_id, "date": date}
+        ).to_list(200)
+
+        commit_messages = [r.get("message") for r in records if r.get("source") == "github" and r.get("message")]
+        slack_messages = [r.get("message") for r in records if r.get("source") == "slack" and r.get("message")]
+        jira_issues = [r.get("message") for r in records if r.get("source") == "jira" and r.get("message")]
+        current_projects = list({r.get("project") for r in records if r.get("project")})
+
+        enriched_activity = {
+            **payload,
+            "commit_messages": commit_messages or "None",
+            "slack_messages": slack_messages or "None",
+            "jira_issues": jira_issues or "None",
+            "current_projects": current_projects or "None",
+        }
+
+        return {"match": match_activity_to_project(enriched_activity)}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to match activity: {exc}") from exc
 
@@ -950,7 +989,7 @@ async def mark_alert_notified_endpoint(alert_id: str):
 @app.post("/alerts/{alert_id}/resolve")
 async def resolve_alert_endpoint(
     alert_id: str,
-    payload: dict[str, Any] = Body(...)
+    payload: dict[str, Any] = Body(default={})
 ):
     """Resolve an alert with optional resolution note."""
     try:

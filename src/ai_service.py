@@ -6,24 +6,28 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _get_gemini_client():
-    api_key = os.getenv("GEMINI_API_KEY")
+def _get_groq_client():
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         return None
 
     try:
-        from google import genai
+        from groq import Groq
 
-        return genai.Client(api_key=api_key)
+        return Groq(api_key=api_key)
     except Exception:
         return None
 
 
-gemini_client = _get_gemini_client()
+groq_client = _get_groq_client()
 
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 def _call_gemini(prompt: str, max_retries: int | None = None) -> str | None:
-    if gemini_client is None:
+    """Kept this function name so every other function below (and any external
+    imports) doesn't need to change. It now calls Groq under the hood instead
+    of Gemini."""
+    if groq_client is None:
         return None
 
     effective_retries = max(1, int(max_retries or os.getenv("AI_MAX_RETRIES", "1")))
@@ -31,13 +35,13 @@ def _call_gemini(prompt: str, max_retries: int | None = None) -> str | None:
 
     for attempt in range(1, effective_retries + 1):
         try:
-            response = gemini_client.models.generate_content(
-                model="gemini-2.5-flash-lite",
-                contents=prompt,
+            response = groq_client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[{"role": "user", "content": prompt}],
             )
-            return response.text.strip()
+            return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[Gemini call failed] attempt {attempt}/{effective_retries}: {type(e).__name__}: {e}")
+            print(f"[Groq call failed] attempt {attempt}/{effective_retries}: {type(e).__name__}: {e}")
             if attempt == effective_retries:
                 return None
             if retry_delay > 0:
@@ -73,26 +77,41 @@ Do not speculate about cause - just state the facts clearly.""",
 
 
 def generate_gap_priority(gap: dict, max_retries: int = 3) -> str:
+    github = gap.get("github_count", 0) or 0
+    slack = gap.get("slack_count", 0) or 0
+    jira = gap.get("jira_count", 0) or 0
+    hours_logged = gap.get("hours_logged", 0) or 0
+    total_activity = github + slack + jira
+
+    # Priority is decided by fixed rules, not by the AI, so it's consistent every time.
+    if total_activity >= 6 and hours_logged == 0:
+        computed_priority = "High"
+    elif total_activity >= 3 or (hours_logged > 0 and total_activity > 0):
+        computed_priority = "Medium"
+    else:
+        computed_priority = "Low"
+
     prompt = f"""You are an expert reviewer of developer activity and timesheet data.
 
 Developer: {gap.get('developer_id', 'UNKNOWN')}
 Date: {gap.get('date', 'UNKNOWN')}
-GitHub commits: {gap.get('github_count', 0)}
-Slack messages: {gap.get('slack_count', 0)}
-Jira updates: {gap.get('jira_count', 0)}
-Hours logged: {gap.get('hours_logged', 0)}
+GitHub commits: {github}
+Slack messages: {slack}
+Jira updates: {jira}
+Hours logged: {hours_logged}
 Reason flagged: {gap.get('reason', 'unknown')}
 
-Classify this gap as one of: High, Medium, or Low priority.
-Then write one sentence explaining why.
-Return only the classification and the explanation."""
+This gap has already been classified as {computed_priority} priority based on activity counts.
+Write exactly one sentence explaining why, referencing the actual activity numbers above.
+Return only that one sentence — do not restate the priority label."""
 
-    result = _call_gemini(prompt, max_retries=max_retries)
-    if result is None:
+    explanation = _call_gemini(prompt, max_retries=max_retries)
+    if explanation is None:
         developer = gap.get("developer_id", "UNKNOWN")
         date = gap.get("date", "UNKNOWN")
-        return f"Low priority: AI unavailable for {developer} on {date}."
-    return result
+        explanation = f"AI explanation unavailable for {developer} on {date}."
+
+    return f"{computed_priority} priority: {explanation}"
 
 
 def suggest_timesheet_entry(activity: dict, max_retries: int = 3) -> dict[str, str | float]:
@@ -121,8 +140,16 @@ Write the answer in JSON with keys: hours, project, note."""
             "note": "AI suggestion unavailable.",
         }
 
+    # Strip markdown code fences (```json ... ```) if the model added them
+    cleaned = result.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
+
     try:
-        parsed = json.loads(result)
+        parsed = json.loads(cleaned)
         if isinstance(parsed, dict):
             parsed["hours"] = float(parsed.get("hours", 0))
             parsed["project"] = str(parsed.get("project", "Unknown"))
@@ -193,4 +220,3 @@ if __name__ == "__main__":
         "reason": "Commit exists but no timesheet",
     }
     print(generate_ai_summary(fake_gap))
- 
