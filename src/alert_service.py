@@ -4,9 +4,7 @@ Handles alert generation, persistence, and notification routing.
 """
 
 import os
-import smtplib
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
 from typing import Any
 
 from .database import db
@@ -175,7 +173,7 @@ async def send_slack_notification(alert: dict[str, Any]) -> bool:
 
 async def send_email_notification(alert: dict[str, Any], recipient: str) -> bool:
     """
-    Send alert notification via email.
+    Send alert notification via email using Resend.
 
     Args:
         alert: Alert document
@@ -184,11 +182,11 @@ async def send_email_notification(alert: dict[str, Any], recipient: str) -> bool
     Returns:
         True if sent successfully, False otherwise
     """
+    api_key = os.getenv("RESEND_API_KEY")
     email_from = os.getenv("EMAIL_FROM")
-    email_password = os.getenv("EMAIL_APP_PASSWORD")
 
-    if not email_from or not email_password:
-        print("Email not configured: missing EMAIL_FROM or EMAIL_APP_PASSWORD")
+    if not api_key or not email_from:
+        print("Email not configured: missing RESEND_API_KEY or EMAIL_FROM")
         return False
 
     subject = f"Unbilled Revenue Alert: {alert.get('developer_id', 'Unknown developer')}"
@@ -197,15 +195,16 @@ async def send_email_notification(alert: dict[str, Any], recipient: str) -> bool
         f"on {alert.get('date', 'Unknown date')}."
     )
 
-    message = MIMEText(body)
-    message["Subject"] = subject
-    message["From"] = email_from
-    message["To"] = recipient
-
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
-            server.login(email_from, email_password)
-            server.sendmail(email_from, recipient, message.as_string())
+        import resend
+
+        resend.api_key = api_key
+        resend.Emails.send({
+            "from": email_from,
+            "to": [recipient],
+            "subject": subject,
+            "text": body,
+        })
         return True
     except Exception as e:
         print(f"Failed to send email notification: {e}")
