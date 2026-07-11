@@ -89,7 +89,11 @@ async def fetch_slack_messages(
             total_fetched += len(messages)
 
             for message in messages:
-                user = message.get("user") or message.get("bot_id") or "UNKNOWN"
+                # Skip bot-authored messages entirely — they aren't real developer activity
+                if message.get("bot_id") or message.get("subtype") == "bot_message":
+                    continue
+
+                user = message.get("user") or "UNKNOWN"
                 timestamp = message.get("ts")
                 if not timestamp:
                     continue

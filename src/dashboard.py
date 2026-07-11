@@ -346,18 +346,28 @@ elif page == "Gaps":
     st.title("Detected Gaps")
     st.caption("Days a developer was active but didn't log matching hours.")
 
+    if "gaps_action_message" in st.session_state:
+        st.success(st.session_state["gaps_action_message"])
+        del st.session_state["gaps_action_message"]
+
     top1, top2, top3 = st.columns([1, 1, 2])
     with top1:
         if st.button("🔄 Refresh gap detection"):
             result = api_post("/refresh_gaps")
             if result:
+                st.session_state["gaps_action_message"] = (
+                    f"{result.get('new_total_gaps', '?')} total gaps, "
+                    f"{result.get('new_gaps_saved', '?')} new."
+                )
                 st.rerun()
     with top2:
         if st.button("🗑️ Clear all gaps"):
             result = api_delete("/gaps/clear")
             if result:
+                st.session_state["gaps_action_message"] = result.get(
+                    "message", "Gaps cleared."
+                )
                 st.rerun()
-
     check_result = api_get("/check_gaps")
     gaps_data = api_get("/detected_gaps")
     gaps = gaps_data.get("detected_gaps", []) if gaps_data else []
@@ -458,6 +468,9 @@ elif page == "Developers":
 elif page == "Alerts":
     st.title("Alerts")
     st.caption("Notifications sent for significant gaps (Slack + email).")
+    if "alerts_action_message" in st.session_state:
+        st.success(st.session_state["alerts_action_message"])
+        del st.session_state["alerts_action_message"]
 
     tab1, tab2 = st.tabs(["Pending", "History"])
 
@@ -475,10 +488,16 @@ elif page == "Alerts":
                     if c1.button("✅ Mark Notified", key=f"notify_{alert_id}"):
                         result = api_post(f"/alerts/{alert_id}/mark_notified")
                         if result:
+                            st.session_state["alerts_action_message"] = result.get(
+                                "message", "Marked as notified."
+                            )
                             st.rerun()
                     if c2.button("☑️ Resolve", key=f"resolve_{alert_id}"):
                         result = api_post(f"/alerts/{alert_id}/resolve")
                         if result:
+                            st.session_state["alerts_action_message"] = result.get(
+                                "message", "Resolved."
+                            )
                             st.rerun()
 
     with tab2:

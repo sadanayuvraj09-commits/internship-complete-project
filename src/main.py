@@ -380,12 +380,26 @@ async def get_commits(limit: int = Query(default=100, ge=1, le=1000)):
 
 @app.post("/fetch_slack_messages")
 async def fetch_slack_messages_endpoint(
-    start_date: str,
-    end_date: str | None = None,
+    start_date: str | None = Query(default=None),
+    end_date: str | None = Query(default=None),
     channel_ids: list[str] = Query(default=[]),
 ):
+    from datetime import timedelta
+
+    effective_start = start_date or (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+    effective_end = end_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    effective_channels = channel_ids or [
+        c.strip() for c in (settings.slack_channel_ids or "").split(",") if c.strip()
+    ]
+
+    if not effective_channels:
+        raise HTTPException(
+            status_code=400,
+            detail="No channel_ids provided and SLACK_CHANNEL_IDS is not set in .env",
+        )
+
     try:
-        result = await fetch_slack_messages(channel_ids, start_date, end_date)
+        result = await fetch_slack_messages(effective_channels, effective_start, effective_end)
         invalidate_gap_detection_cache()
         return result
     except RuntimeError as exc:
@@ -400,12 +414,17 @@ async def get_slack_activity(limit: int = Query(default=100, ge=1, le=1000)):
 
 @app.post("/fetch_jira_updates")
 async def fetch_jira_updates_endpoint(
-    start_date: str,
-    end_date: str | None = None,
-    project_key: str | None = None,
+    start_date: str | None = Query(default=None),
+    end_date: str | None = Query(default=None),
+    project_key: str | None = Query(default=None),
 ):
+    from datetime import timedelta
+
+    effective_start = start_date or (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+    effective_end = end_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
     try:
-        result = await fetch_jira_updates(start_date, end_date, project_key)
+        result = await fetch_jira_updates(effective_start, effective_end, project_key)
         invalidate_gap_detection_cache()
         return result
     except RuntimeError as exc:

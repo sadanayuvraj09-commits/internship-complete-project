@@ -65,19 +65,21 @@ async def fetch_jira_updates(
 
     total_fetched = 0
     total_saved = 0
-    start_at = 0
+    next_page_token = None
 
     async with httpx.AsyncClient(auth=_jira_auth(), timeout=30) as http_client:
         while True:
+            params = {
+                "jql": jql,
+                "maxResults": max_results,
+                "fields": "summary,status,assignee,updated,created,project",
+            }
+            if next_page_token:
+                params["nextPageToken"] = next_page_token
+
             response = await http_client.get(
-                f"{base_url}/rest/api/3/search",
-                params={
-                    "jql": jql,
-                    "startAt": start_at,
-                    "maxResults": max_results,
-                    "fields": "summary,status,assignee,updated,created,project",
-                    "expand": "changelog",
-                },
+                f"{base_url}/rest/api/3/search/jql",
+                params=params,
                 headers={"Accept": "application/json"},
             )
             if response.status_code >= 400:
@@ -122,9 +124,7 @@ async def fetch_jira_updates(
                             "status": (fields.get("status") or {}).get("name"),
                             "jira_account_id": account_id,
                             "jira_display_name": display_name,
-                            "changelog_count": len(
-                                (issue.get("changelog") or {}).get("histories", [])
-                            ),
+                            "changelog_count": 0,
                         }
                     },
                     upsert=True,
@@ -132,8 +132,9 @@ async def fetch_jira_updates(
                 if result.upserted_id or result.modified_count:
                     total_saved += 1
 
-            start_at += len(issues)
-            if start_at >= payload.get("total", 0) or not issues:
+            next_page_token = payload.get("nextPageToken")
+            is_last = payload.get("isLast", not next_page_token)
+            if is_last or not issues:
                 break
 
     return {
