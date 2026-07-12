@@ -24,11 +24,14 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 # Sidebar — connection settings + nav
 # ---------------------------------------------------------------------------
+
 st.sidebar.title("🕵️ Unbilled Revenue Detective")
-base_url = st.sidebar.text_input(
-    "Backend URL",
-    value=os.getenv("BACKEND_URL", "https://revenue-detectionn.onrender.com"),
-)
+
+# Fixed backend — not shown to regular employees. Set BACKEND_URL as a
+# Streamlit secret/env var to override without touching code.
+DEFAULT_BACKEND_URL = "https://revenue-detectionn.onrender.com"
+base_url = os.getenv("BACKEND_URL", DEFAULT_BACKEND_URL)
+
 api_key = st.sidebar.text_input(
     "API Key (x-api-key)", type="password",
     help="Needed for protected endpoints: add timesheets, clear gaps, analyze & alert, fetch commits."
@@ -38,6 +41,9 @@ is_manager = bool(api_key)
 
 if is_manager:
     st.sidebar.success("Manager mode — full access")
+    # Backend URL override, only visible/editable by managers, collapsed by default.
+    with st.sidebar.expander("Advanced settings"):
+        base_url = st.text_input("Backend URL override", value=base_url)
     page = st.sidebar.radio(
         "Navigate",
         ["Overview", "Data Sync", "Timesheets", "Gaps", "Developers", "Alerts", "Ask AI", "System Health"],
@@ -50,7 +56,6 @@ else:
     )
 
 st.sidebar.divider()
-st.sidebar.caption("Start your FastAPI backend before using this dashboard.")
 
 # ---------------------------------------------------------------------------
 # API helpers
